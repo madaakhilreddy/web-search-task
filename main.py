@@ -2,29 +2,36 @@ import requests
 from bs4 import BeautifulSoup
 from collections import defaultdict
 from urllib.parse import urljoin, urlparse
+import unittest
+from unittest.mock import patch, MagicMock
+from io import StringIO
+
 
 class WebCrawler:
-    def __init__(self):
-        self.index = defaultdict(list)
+    def __init__(self, max_depth=2):
+        self.index = defaultdict(str)
         self.visited = set()
+        self.max_depth = max_depth
 
-    def crawl(self, url, base_url=None):
-        if url in self.visited:
+    def crawl(self, url, base_url=None, depth=0):
+        if depth > self.max_depth or url in self.visited:
             return
         self.visited.add(url)
 
         try:
-            response = requests.get(url)
+            response = requests.get(url, timeout=5)
             soup = BeautifulSoup(response.text, 'html.parser')
             self.index[url] = soup.get_text()
+
+            parsed_base = urlparse(base_url or url).netloc
 
             for link in soup.find_all('a'):
                 href = link.get('href')
                 if href:
-                    if urlparse(href).netloc:
-                        href = urljoin(base_url or url, href)
-                    if not href.startswith(base_url or url):
-                        self.crawl(href, base_url=base_url or url)
+                    href = urljoin(base_url or url, href)
+                    if urlparse(href).scheme in ('http', 'https') and urlparse(href).netloc == parsed_base:
+                        self.crawl(href, base_url=base_url or url, depth=depth + 1)
+
         except Exception as e:
             print(f"Error crawling {url}: {e}")
 
@@ -43,22 +50,18 @@ class WebCrawler:
         else:
             print("No results found.")
 
-def main():
-    crawler = WebCrawler()
-    start_url = "https://example.com"
-    crawler.craw(start_url)
 
-    keyword = "test"
+def main():
+    crawler = WebCrawler(max_depth=2)
+    start_url = "https://example.com"
+    crawler.crawl(start_url)
+
+    keyword = "Domain"
     results = crawler.search(keyword)
     crawler.print_results(results)
 
-import unittest
-from unittest.mock import patch, MagicMock
-import requests
-from bs4 import BeautifulSoup
-from collections import defaultdict
-from urllib.parse import urljoin, urlparse
 
+# Unit tests
 class WebCrawlerTests(unittest.TestCase):
     @patch('requests.get')
     def test_crawl_success(self, mock_get):
@@ -66,7 +69,7 @@ class WebCrawlerTests(unittest.TestCase):
         <html><body>
             <h1>Welcome!</h1>
             <a href="/about">About Us</a>
-            <a href="https://www.external.com">External Link</a>
+            <a href="https://example.com">Home Again</a>
         </body></html>
         """
         mock_response = MagicMock()
@@ -76,38 +79,38 @@ class WebCrawlerTests(unittest.TestCase):
         crawler = WebCrawler()
         crawler.crawl("https://example.com")
 
-        # Assert that 'about' was added to visited URLs
         self.assertIn("https://example.com/about", crawler.visited)
+        self.assertIn("https://example.com", crawler.index)
 
     @patch('requests.get')
     def test_crawl_error(self, mock_get):
         mock_get.side_effect = requests.exceptions.RequestException("Test Error")
 
         crawler = WebCrawler()
-        crawler.crawl("https://example.com")
 
-        # Assertions to check if the error was logged (you'll
-        # likely need to set up logging capture in your tests)
+        with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
+            crawler.crawl("https://example.com")
+            self.assertIn("Error crawling https://example.com", mock_stdout.getvalue())
 
     def test_search(self):
         crawler = WebCrawler()
         crawler.index["page1"] = "This has the keyword"
-        crawler.index["page2"] = "No keyword here"
+        crawler.index["page2"] = "No match here"
 
         results = crawler.search("keyword")
-        self.assertEqual(results, ["page2"])
+        self.assertEqual(results, ["page1"])
 
-    @patch('sys.stdout')
+    @patch('sys.stdout', new_callable=StringIO)
     def test_print_results(self, mock_stdout):
         crawler = WebCrawler()
         crawler.print_results(["https://test.com/result"])
-
-        # Assert that the output was captured correctly by mock_stdout
-
-if __name__ == "__main__":
-    unittest.main()  # Run unit tests
-    main()  # Run your main application logic 
+        output = mock_stdout.getvalue()
+        self.assertIn("Search results:", output)
+        self.assertIn("- https://test.com/result", output)
 
 
 if __name__ == "__main__":
+    print("Running tests...\n")
+    unittest.main(exit=False)
+    print("\nRunning main crawler...\n")
     main()
