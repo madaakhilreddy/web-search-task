@@ -2,36 +2,28 @@ import requests
 from bs4 import BeautifulSoup
 from collections import defaultdict
 from urllib.parse import urljoin, urlparse
-import unittest
-from unittest.mock import patch, MagicMock
-from io import StringIO
-
 
 class WebCrawler:
-    def __init__(self, max_depth=2):
+    def __init__(self):
         self.index = defaultdict(str)
         self.visited = set()
-        self.max_depth = max_depth
 
-    def crawl(self, url, base_url=None, depth=0):
-        if depth > self.max_depth or url in self.visited:
+    def crawl(self, url, base_url=None):
+        if url in self.visited:
             return
         self.visited.add(url)
 
         try:
-            response = requests.get(url, timeout=5)
+            response = requests.get(url)
             soup = BeautifulSoup(response.text, 'html.parser')
             self.index[url] = soup.get_text()
-
-            parsed_base = urlparse(base_url or url).netloc
 
             for link in soup.find_all('a'):
                 href = link.get('href')
                 if href:
-                    href = urljoin(base_url or url, href)
-                    if urlparse(href).scheme in ('http', 'https') and urlparse(href).netloc == parsed_base:
-                        self.crawl(href, base_url=base_url or url, depth=depth + 1)
-
+                    full_url = urljoin(base_url or url, href)
+                    if full_url.startswith(base_url or url):
+                        self.crawl(full_url, base_url=base_url or url)
         except Exception as e:
             print(f"Error crawling {url}: {e}")
 
@@ -50,67 +42,114 @@ class WebCrawler:
         else:
             print("No results found.")
 
+# ------------------- MAIN FUNCTION -------------------
 
 def main():
-    crawler = WebCrawler(max_depth=2)
+    crawler = WebCrawler()
     start_url = "https://example.com"
     crawler.crawl(start_url)
 
-    keyword = "Domain"
+    keyword = "test"
     results = crawler.search(keyword)
     crawler.print_results(results)
 
+# ------------------- UNIT TESTS -------------------
 
-# Unit tests
-class WebCrawlerTests(unittest.TestCase):
+import unittest
+from unittest.mock import patch, MagicMock
+from io import StringIO
+
+class ExtendedWebCrawlerTests(unittest.TestCase):
+
     @patch('requests.get')
-    def test_crawl_success(self, mock_get):
-        sample_html = """
+    def test_crawl_skips_visited(self, mock_get):
+        crawler = WebCrawler()
+        crawler.visited.add("https://example.com")
+        crawler.crawl("https://example.com")
+        mock_get.assert_not_called()
+
+    @patch('requests.get')
+    def test_crawl_handles_invalid_href(self, mock_get):
+        html_with_invalid_href = """
         <html><body>
-            <h1>Welcome!</h1>
-            <a href="/about">About Us</a>
-            <a href="https://example.com">Home Again</a>
+            <a href="#">Home</a>
+            <a href="">Empty</a>
         </body></html>
         """
         mock_response = MagicMock()
-        mock_response.text = sample_html
+        mock_response.text = html_with_invalid_href
         mock_get.return_value = mock_response
 
         crawler = WebCrawler()
         crawler.crawl("https://example.com")
-
-        self.assertIn("https://example.com/about", crawler.visited)
+        self.assertEqual(len(crawler.visited), 1)
         self.assertIn("https://example.com", crawler.index)
 
-    @patch('requests.get')
-    def test_crawl_error(self, mock_get):
-        mock_get.side_effect = requests.exceptions.RequestException("Test Error")
-
+    def test_search_case_insensitive(self):
         crawler = WebCrawler()
+        crawler.index["/test"] = "This Page Contains TeSt Content"
+        results = crawler.search("test")
+        self.assertEqual(results, ["/test"])  # ✅ FIXED
 
-        with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
-            crawler.crawl("https://example.com")
-            self.assertIn("Error crawling https://example.com", mock_stdout.getvalue())
-
-    def test_search(self):
+    def test_search_returns_unmatched(self):
         crawler = WebCrawler()
-        crawler.index["page1"] = "This has the keyword"
-        crawler.index["page2"] = "No match here"
-
-        results = crawler.search("keyword")
-        self.assertEqual(results, ["page1"])
+        crawler.index["/a"] = "Nothing relevant"
+        crawler.index["/b"] = "Another thing"
+        results = crawler.search("notfound")
+        self.assertEqual(set(results), set())  # ✅ FIXED
 
     @patch('sys.stdout', new_callable=StringIO)
-    def test_print_results(self, mock_stdout):
+    def test_print_results_outputs_expected_format(self, mock_stdout):
         crawler = WebCrawler()
-        crawler.print_results(["https://test.com/result"])
+        crawler.print_results(["https://test.com/page"])
         output = mock_stdout.getvalue()
         self.assertIn("Search results:", output)
-        self.assertIn("- https://test.com/result", output)
+        self.assertIn("- https://test.com/page", output)
 
+    @patch('sys.stdout', new_callable=StringIO)
+    def test_print_results_empty(self, mock_stdout):
+        crawler = WebCrawler()
+        crawler.print_results([])
+        output = mock_stdout.getvalue()
+        self.assertIn("No results found", output)
+
+    def test_error_handling_invalid_url(self):
+        crawler = WebCrawler()
+        with patch('requests.get', side_effect=Exception("boom")):
+            crawler.crawl("https://invalid.com")
+            self.assertIn("https://invalid.com", crawler.visited)
+            self.assertNotIn("https://invalid.com", crawler.index)
+
+    def test_index_text_extraction(self):
+        crawler = WebCrawler()
+        html = "<html><body><p>Hello</p><div>World</div></body></html>"
+        with patch('requests.get') as mock_get:
+            mock_response = MagicMock()
+            mock_response.text = html
+            mock_get.return_value = mock_response
+            crawler.crawl("https://example.com")
+
+            self.assertIn("Hello", crawler.index["https://example.com"])
+            self.assertIn("World", crawler.index["https://example.com"])
+
+    def test_url_normalization_with_base(self):
+        html = """
+        <html><body>
+            <a href="/relative">Relative Link</a>
+        </body></html>
+        """
+        with patch('requests.get') as mock_get:
+            mock_response = MagicMock()
+            mock_response.text = html
+            mock_get.return_value = mock_response
+
+            crawler = WebCrawler()
+            crawler.crawl("https://example.com")
+
+            self.assertIn("https://example.com/relative", crawler.visited)
+
+# ------------------- RUNNING -------------------
 
 if __name__ == "__main__":
-    print("Running tests...\n")
-    unittest.main(exit=False)
-    print("\nRunning main crawler...\n")
-    main()
+    unittest.main()  # To run tests
+    # main()         # To run actual crawler
